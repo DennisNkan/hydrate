@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Hydrate</title>
+
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0e6f6a">
+
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Hydrate">
+<meta name="mobile-web-app-capable" content="yes">
+
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app">
+  <div id="iosBanner" class="ios-banner" hidden>
+    <span>For reminders on iPhone: tap <strong>Share</strong> then <strong>Add to Home Screen</strong>, then open Hydrate from there.</span>
+    <button id="iosBannerClose" class="icon-btn" aria-label="Dismiss">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg>
+    </button>
+  </div>
+
+  <header class="topbar">
+    <span class="wordmark">Hydrate</span>
+    <button id="settingsBtn" class="icon-btn" aria-label="Settings" aria-haspopup="dialog">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8">
+        <circle cx="12" cy="12" r="3.2"/>
+        <path d="M19.4 13.5a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V19a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H4a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H10a1.6 1.6 0 0 0 1-1.5V4a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V10a1.6 1.6 0 0 0 1.5 1H20a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/>
+      </svg>
+    </button>
+  </header>
+
+  <main class="main">
+    <section class="ring-section">
+      <div class="ring-wrap">
+        <svg viewBox="0 0 220 220" class="ring">
+          <circle class="ring-track" cx="110" cy="110" r="96"></circle>
+          <circle id="ringProgress" class="ring-progress" cx="110" cy="110" r="96"></circle>
+        </svg>
+        <div class="ring-center">
+          <div id="totalAmount" class="total-amount">0</div>
+          <div class="total-unit"><span id="unitLabel">ml</span> of <span id="goalLabel">2000</span></div>
+        </div>
+      </div>
+      <p id="statusLine" class="status-line">Reminders are off</p>
+    </section>
+
+    <section class="add-section">
+      <h2 class="section-title">Log a drink</h2>
+      <p class="section-hint">Tap an amount, then take a quick photo to confirm.</p>
+      <div class="quick-add" id="quickAdd"></div>
+      <div class="custom-add">
+        <input id="customAmount" type="number" min="1" inputmode="numeric" placeholder="Custom amount">
+        <button id="customAddBtn" class="btn btn-secondary">Add</button>
+      </div>
+    </section>
+
+    <section class="log-section">
+      <h2 class="section-title">Today</h2>
+      <ul id="entryList" class="entry-list">
+        <li class="entry-empty">Nothing logged yet</li>
+      </ul>
+    </section>
+
+    <section class="history-section">
+      <h2 class="section-title">Last 7 days</h2>
+      <div id="historyBars" class="history-bars"></div>
+    </section>
+  </main>
+
+  <dialog id="settingsDialog" class="settings-dialog">
+    <form method="dialog" class="settings-form">
+      <h2 class="section-title">Settings</h2>
+
+      <label class="field">
+        <span>Daily goal</span>
+        <div class="field-row">
+          <input id="goalInput" type="number" min="100" step="50">
+          <select id="unitSelect">
+            <option value="ml">ml</option>
+            <option value="oz">fl oz</option>
+          </select>
+        </div>
+      </label>
+
+      <label class="field">
+        <span>Cup size</span>
+        <input id="cupInput" type="number" min="10" step="10">
+      </label>
+
+      <label class="field">
+        <span>Remind me every</span>
+        <select id="intervalSelect">
+          <option value="15">15 minutes</option>
+          <option value="30">30 minutes</option>
+          <option value="45">45 minutes</option>
+          <option value="60">1 hour</option>
+          <option value="90">1.5 hours</option>
+          <option value="120">2 hours</option>
+          <option value="240">4 hours</option>
+          <option value="300">5 hours</option>
+          <option value="360">6 hours</option>
+        </select>
+      </label>
+
+      <label class="field">
+        <span>Reminder sound</span>
+        <span class="sound-row">
+          <input type="file" id="soundInput" accept="audio/*">
+          <button type="button" id="testSoundBtn" class="btn btn-secondary">Test</button>
+        </span>
+        <button type="button" id="clearSoundBtn" class="link-btn" hidden>Use default chime</button>
+        <span id="soundNote" class="permission-note"></span>
+      </label>
+
+      <button type="button" id="enableReminders" class="btn btn-primary">Enable reminders</button>
+      <p id="permissionNote" class="permission-note"></p>
+
+      <div class="dialog-actions">
+        <button type="submit" class="btn btn-secondary">Done</button>
+      </div>
+    </form>
+  </dialog>
+
+  <input type="file" id="cameraInput" accept="image/*" capture="environment" hidden>
+
+</div>
+<script src="app.js"></script>
+</body>
+</html>
