@@ -180,9 +180,28 @@ function renderEntries() {
     const li = document.createElement('li');
     const isNew = !seenEntryIds.has(entry.id);
     if (isNew) li.className = 'entry-enter';
-    const time = new Date(entry.time).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-    const thumb = entry.photo ? `<img class="entry-thumb" src="${entry.photo}" alt="Proof photo">` : '';
-    li.innerHTML = `<span class="entry-info">${thumb}<span class="entry-time">${time}</span><span>${displayAmount(entry.amountMl)} ${state.unit}</span></span>`;
+
+    // Built via DOM APIs rather than innerHTML — entry.photo comes back out
+    // of localStorage, and a value that's ever anything other than what we
+    // wrote (a hand-edited value, a future bug) should never be re-parsed
+    // as markup, only ever treated as attribute data.
+    const info = document.createElement('span');
+    info.className = 'entry-info';
+    if (typeof entry.photo === 'string' && entry.photo.startsWith('data:image/')) {
+      const img = document.createElement('img');
+      img.className = 'entry-thumb';
+      img.src = entry.photo;
+      img.alt = 'Proof photo';
+      info.appendChild(img);
+    }
+    const timeSpan = document.createElement('span');
+    timeSpan.className = 'entry-time';
+    timeSpan.textContent = new Date(entry.time).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    const amountSpan = document.createElement('span');
+    amountSpan.textContent = `${displayAmount(entry.amountMl)} ${state.unit}`;
+    info.append(timeSpan, amountSpan);
+    li.appendChild(info);
+
     const removeBtn = document.createElement('button');
     removeBtn.className = 'entry-remove';
     removeBtn.textContent = 'Remove';
@@ -259,11 +278,27 @@ function makeThumbnail(img) {
 const WATER_KEYWORDS = ['bottle', 'cup', 'mug', 'glass', 'goblet', 'pitcher', 'jug', 'beaker', 'canteen', 'flask', 'water'];
 
 let mobilenetModelPromise = null;
-function loadScriptOnce(src) {
+// Subresource Integrity: pins these third-party scripts to an exact byte
+// hash, so a compromised or MITM'd CDN response gets refused by the browser
+// instead of silently executing. Hashes computed from the pinned versions below.
+const CDN_SCRIPTS = [
+  {
+    src: 'https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js',
+    integrity: 'sha384-xc4sZTUOM2obsQR75Be0zGbt7Gb6mOVFJN4yBm30Xn0YQLDWIY+yrtFmLmIank6w'
+  },
+  {
+    src: 'https://cdn.jsdelivr.net/npm/@tensorflow-models/mobilenet@2.1.1/dist/mobilenet.min.js',
+    integrity: 'sha384-oBAqwJ0tv9zzKlbIZyBhhXlEvU/PMrSMqDyOHlEZVC8xWHx4yPySuS7vRikRcYFq'
+  }
+];
+
+function loadScriptOnce(src, integrity) {
   return new Promise((resolve, reject) => {
     if (document.querySelector(`script[src="${src}"]`)) return resolve();
     const s = document.createElement('script');
     s.src = src;
+    s.integrity = integrity;
+    s.crossOrigin = 'anonymous';
     s.onload = () => resolve();
     s.onerror = () => reject(new Error('failed to load ' + src));
     document.head.appendChild(s);
@@ -275,8 +310,8 @@ function loadScriptOnce(src) {
 // lazily from a CDN, not bundled, since most sessions may never need it.
 function getMobilenetModel() {
   if (!mobilenetModelPromise) {
-    mobilenetModelPromise = loadScriptOnce('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js')
-      .then(() => loadScriptOnce('https://cdn.jsdelivr.net/npm/@tensorflow-models/mobilenet@2.1.1/dist/mobilenet.min.js'))
+    mobilenetModelPromise = loadScriptOnce(CDN_SCRIPTS[0].src, CDN_SCRIPTS[0].integrity)
+      .then(() => loadScriptOnce(CDN_SCRIPTS[1].src, CDN_SCRIPTS[1].integrity))
       .then(() => window.mobilenet.load({ version: 1, alpha: 0.25 }));
   }
   return mobilenetModelPromise;
@@ -308,12 +343,30 @@ function requestWaterPhoto(ml) {
   els.cameraInput.click();
 }
 
+const MAX_PHOTO_BYTES = 15 * 1024 * 1024; // guards against decoding a huge file into memory
+
 els.cameraInput.addEventListener('change', async () => {
   const file = els.cameraInput.files[0];
   const ml = pendingAmountMl;
   pendingAmountMl = null;
   els.customAmount.value = '';
   if (!file || ml == null) return;
+
+  // Whitelist by actual MIME type — the file picker's `accept` filter is
+  // only a UI hint and doesn't stop a user (or script) from choosing
+  // anything else, so re-check what was actually handed to us.
+  if (!file.type.startsWith('image/')) {
+    els.photoCheckNote.hidden = false;
+    els.photoCheckNote.classList.add('warn');
+    els.photoCheckNote.textContent = 'That file is not an image — pick a photo.';
+    return;
+  }
+  if (file.size > MAX_PHOTO_BYTES) {
+    els.photoCheckNote.hidden = false;
+    els.photoCheckNote.classList.add('warn');
+    els.photoCheckNote.textContent = 'That photo is too large — try a smaller one.';
+    return;
+  }
 
   isVerifyingPhoto = true;
   els.photoCheckNote.hidden = false;
@@ -531,6 +584,11 @@ els.enableReminders.addEventListener('click', async () => {
 els.soundInput.addEventListener('change', () => {
   const file = els.soundInput.files[0];
   if (!file) return;
+  if (!file.type.startsWith('audio/')) {
+    els.soundNote.textContent = 'That file is not audio — pick a sound clip.';
+    els.soundInput.value = '';
+    return;
+  }
   if (file.size > MAX_SOUND_BYTES) {
     els.soundNote.textContent = 'That file is too big — pick a clip under 2MB.';
     els.soundInput.value = '';
