@@ -216,6 +216,13 @@ body {
   flex-direction: column;
 }
 
+.photo-check-note {
+  margin: var(--space-3) 0 0;
+  font-size: 13px;
+  color: var(--c-blue);
+}
+.photo-check-note.warn { color: var(--c-coral); }
+
 .section-hint {
   margin: calc(var(--space-4) * -1) 0 var(--space-4) 0;
   padding-top: 0;

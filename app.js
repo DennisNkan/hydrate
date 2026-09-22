@@ -88,7 +88,8 @@ const els = {
   soundInput: document.getElementById('soundInput'),
   testSoundBtn: document.getElementById('testSoundBtn'),
   clearSoundBtn: document.getElementById('clearSoundBtn'),
-  soundNote: document.getElementById('soundNote')
+  soundNote: document.getElementById('soundNote'),
+  photoCheckNote: document.getElementById('photoCheckNote')
 };
 
 function displayAmount(ml) {
@@ -228,33 +229,80 @@ function addWater(ml, photo) {
   if (state.remindersOn) restartReminderTimer();
 }
 
-// Downscale the captured photo to a small square thumbnail before it ever
-// touches localStorage — a few KB per entry, not the multi-MB original.
-function fileToThumbnail(file) {
+function loadImageFromFile(file) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     const reader = new FileReader();
     reader.onerror = reject;
     reader.onload = () => { img.src = reader.result; };
     img.onerror = reject;
-    img.onload = () => {
-      const size = 48;
-      const canvas = document.createElement('canvas');
-      canvas.width = size;
-      canvas.height = size;
-      const ctx = canvas.getContext('2d');
-      const s = Math.min(img.width, img.height);
-      ctx.drawImage(img, (img.width - s) / 2, (img.height - s) / 2, s, s, 0, 0, size, size);
-      resolve(canvas.toDataURL('image/jpeg', 0.6));
-    };
+    img.onload = () => resolve(img);
     reader.readAsDataURL(file);
   });
 }
 
+// Downscale the captured photo to a small square thumbnail before it ever
+// touches localStorage — a few KB per entry, not the multi-MB original.
+function makeThumbnail(img) {
+  const size = 48;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  const s = Math.min(img.width, img.height);
+  ctx.drawImage(img, (img.width - s) / 2, (img.height - s) / 2, s, s, 0, 0, size, size);
+  return canvas.toDataURL('image/jpeg', 0.6);
+}
+
+// ImageNet class names (from MobileNet) that count as "water-related" —
+// checked as a loose substring match against the model's top-5 guesses.
+const WATER_KEYWORDS = ['bottle', 'cup', 'mug', 'glass', 'goblet', 'pitcher', 'jug', 'beaker', 'canteen', 'flask', 'water'];
+
+let mobilenetModelPromise = null;
+function loadScriptOnce(src) {
+  return new Promise((resolve, reject) => {
+    if (document.querySelector(`script[src="${src}"]`)) return resolve();
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error('failed to load ' + src));
+    document.head.appendChild(s);
+  });
+}
+
+// Runs entirely client-side — the photo never leaves the device. Small
+// (alpha 0.25) MobileNet variant to keep the first-load cost low; loaded
+// lazily from a CDN, not bundled, since most sessions may never need it.
+function getMobilenetModel() {
+  if (!mobilenetModelPromise) {
+    mobilenetModelPromise = loadScriptOnce('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js')
+      .then(() => loadScriptOnce('https://cdn.jsdelivr.net/npm/@tensorflow-models/mobilenet@2.1.1/dist/mobilenet.min.js'))
+      .then(() => window.mobilenet.load({ version: 1, alpha: 0.25 }));
+  }
+  return mobilenetModelPromise;
+}
+getMobilenetModel().catch(() => {}); // warm it up in the background; failures are handled per-check
+
+// { ok: true|false|null, label }. null means verification itself failed
+// (offline, CDN blocked, model error) — callers fail OPEN in that case
+// rather than blocking logging entirely over a network hiccup.
+async function verifyWaterPhoto(img) {
+  try {
+    const model = await getMobilenetModel();
+    const predictions = await model.classify(img, 5);
+    const match = predictions.find(p => WATER_KEYWORDS.some(k => p.className.toLowerCase().includes(k)));
+    return { ok: !!match, label: match ? match.className : (predictions[0] && predictions[0].className) };
+  } catch (e) {
+    return { ok: null, label: null };
+  }
+}
+
 let pendingAmountMl = null;
+let isVerifyingPhoto = false;
 
 // Logging a drink requires a photo — take (or cancel) it before it's recorded.
 function requestWaterPhoto(ml) {
+  if (isVerifyingPhoto) return;
   pendingAmountMl = ml;
   els.cameraInput.value = '';
   els.cameraInput.click();
@@ -266,9 +314,34 @@ els.cameraInput.addEventListener('change', async () => {
   pendingAmountMl = null;
   els.customAmount.value = '';
   if (!file || ml == null) return;
-  let photo = null;
-  try { photo = await fileToThumbnail(file); } catch (e) { photo = null; }
-  addWater(ml, photo);
+
+  isVerifyingPhoto = true;
+  els.photoCheckNote.hidden = false;
+  els.photoCheckNote.classList.remove('warn');
+  els.photoCheckNote.textContent = 'Checking photo for a cup or bottle…';
+
+  let img;
+  try {
+    img = await loadImageFromFile(file);
+  } catch (e) {
+    isVerifyingPhoto = false;
+    els.photoCheckNote.classList.add('warn');
+    els.photoCheckNote.textContent = "Couldn't read that photo — try again.";
+    return;
+  }
+
+  const verdict = await verifyWaterPhoto(img);
+  isVerifyingPhoto = false;
+
+  if (verdict.ok === false) {
+    els.photoCheckNote.classList.add('warn');
+    els.photoCheckNote.textContent = `That looked more like "${verdict.label}" — retake with the cup or bottle clearly in frame.`;
+    return;
+  }
+
+  els.photoCheckNote.hidden = true;
+  els.photoCheckNote.classList.remove('warn');
+  addWater(ml, makeThumbnail(img));
 });
 
 function removeEntry(id) {
