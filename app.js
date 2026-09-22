@@ -140,7 +140,9 @@ function render() {
   els.goalLabel.textContent = displayAmount(state.goalMl);
 
   els.statusLine.textContent = state.remindersOn
-    ? `Reminders every ${state.intervalMin} min`
+    ? (state.nextReminderAt
+        ? `Next reminder at ${new Date(state.nextReminderAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
+        : `Reminders every ${state.intervalMin} min`)
     : 'Reminders are off';
 
   renderQuickAdd();
@@ -246,7 +248,6 @@ function addWater(ml, photo) {
   state.entries.push({ id: crypto.randomUUID(), time: Date.now(), amountMl: ml, photo: photo || null });
   saveState(state);
   render();
-  if (state.remindersOn) restartReminderTimer();
 }
 
 function loadImageFromFile(file) {
@@ -523,6 +524,11 @@ async function fireReminder() {
   const body = REMINDER_MESSAGES[reminderCount % REMINDER_MESSAGES.length];
   reminderCount++;
 
+  // Reschedule up front, from "now" — so if the tab was asleep for way
+  // longer than one interval, this fires once (not a pile of backlogged
+  // notifications) and resumes a normal cadence from here.
+  scheduleNextReminder();
+
   await showReminderNotification(body);
   // Vibration API has no effect on iOS (no browser there implements it) —
   // the notification's own `vibrate` pattern above is what carries the
@@ -531,9 +537,35 @@ async function fireReminder() {
   if (document.visibilityState === 'visible') playSound();
 }
 
-function restartReminderTimer() {
+// Reminders are scheduled by absolute clock time (state.nextReminderAt),
+// not by trusting a single long-lived setInterval to survive untouched —
+// it doesn't: a tab reload, a background-tab freeze, or Chrome discarding
+// an idle tab (memory saver) all silently kill an in-flight setInterval
+// with nothing left to restart it. A short, frequent ticker just checks
+// "is it time yet?" against the persisted timestamp, so a reminder that
+// was due while the tab was asleep fires the moment it wakes up instead
+// of never firing at all.
+function scheduleNextReminder() {
+  state.nextReminderAt = Date.now() + state.intervalMin * 60 * 1000;
+  saveState(state);
+  render();
+}
+
+function checkReminderDue() {
+  if (!state.remindersOn) return;
+  if (state.nextReminderAt && Date.now() >= state.nextReminderAt) fireReminder();
+}
+
+function startReminderTicker() {
   if (reminderTimer) clearInterval(reminderTimer);
-  reminderTimer = setInterval(fireReminder, state.intervalMin * 60 * 1000);
+  reminderTimer = setInterval(checkReminderDue, 30 * 1000);
+}
+
+// User explicitly enabled reminders or changed the interval — restart the
+// countdown fresh from this moment.
+function restartReminderTimer() {
+  scheduleNextReminder();
+  startReminderTicker();
 }
 
 function stopReminderTimer() {
@@ -684,7 +716,13 @@ els.customAmount.addEventListener('keydown', e => {
 render();
 
 if (state.remindersOn && 'Notification' in window && Notification.permission === 'granted') {
-  restartReminderTimer();
+  // Don't blindly reset the countdown on every page load/reload — that's
+  // exactly what let the old code silently never fire if the tab reloaded
+  // more often than the interval. Pick up the persisted schedule instead,
+  // firing immediately if it's already overdue (the tab was asleep past it).
+  if (!state.nextReminderAt) scheduleNextReminder();
+  else checkReminderDue();
+  startReminderTicker();
 } else if (state.remindersOn) {
   // Permission was revoked (OS settings, browser reset) since we last saved
   // remindersOn=true — reflect that back to storage instead of silently
@@ -692,6 +730,14 @@ if (state.remindersOn && 'Notification' in window && Notification.permission ===
   state.remindersOn = false;
   saveState(state);
 }
+
+// The 30s ticker above only runs while this tab is actually scheduled by
+// the browser, which mobile browsers stop doing once backgrounded — so
+// also check right when the tab becomes visible again, instead of waiting
+// on the next tick that may not come for a while.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') checkReminderDue();
+});
 
 if (IS_IOS && !IS_STANDALONE && !localStorage.getItem('hydrate-ios-banner-dismissed')) {
   els.iosBanner.hidden = false;
@@ -719,6 +765,13 @@ if (window.matchMedia('(pointer: fine)').matches) {
 function runSelfTest() {
   console.assert(todayKey(new Date(2026, 0, 5)) === '2026-01-05', 'todayKey formats with zero padding');
   console.assert(Math.abs(mlToOz(ozToMl(10)) - 10) < 1e-6, 'oz/ml conversion round-trips');
+
+  // The exact "is it due yet" condition checkReminderDue relies on —
+  // this is the logic that regressed once already (reset-every-page-load).
+  const isDue = nextAt => !!(nextAt && Date.now() >= nextAt);
+  console.assert(isDue(Date.now() - 1000) === true, 'an overdue reminder should be due');
+  console.assert(isDue(Date.now() + 60000) === false, 'a future reminder should not be due yet');
+  console.assert(isDue(null) === false, 'no schedule should never be due');
 
   const s = defaultState();
   s.date = '2000-01-01';
