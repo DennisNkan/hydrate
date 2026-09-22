@@ -81,6 +81,7 @@ const els = {
   cupInput: document.getElementById('cupInput'),
   intervalSelect: document.getElementById('intervalSelect'),
   enableReminders: document.getElementById('enableReminders'),
+  testNotificationBtn: document.getElementById('testNotificationBtn'),
   permissionNote: document.getElementById('permissionNote'),
   iosBanner: document.getElementById('iosBanner'),
   iosBannerClose: document.getElementById('iosBannerClose'),
@@ -275,7 +276,10 @@ function makeThumbnail(img) {
 
 // ImageNet class names (from MobileNet) that count as "water-related" —
 // checked as a loose substring match against the model's top-5 guesses.
-const WATER_KEYWORDS = ['bottle', 'cup', 'mug', 'glass', 'goblet', 'pitcher', 'jug', 'beaker', 'canteen', 'flask', 'water'];
+const WATER_KEYWORDS = [
+  'bottle', 'cup', 'mug', 'glass', 'goblet', 'pitcher', 'jug', 'beaker',
+  'canteen', 'flask', 'water', 'bucket', 'pail', 'teapot', 'coffeepot'
+];
 
 let mobilenetModelPromise = null;
 // Subresource Integrity: pins these third-party scripts to an exact byte
@@ -305,14 +309,15 @@ function loadScriptOnce(src, integrity) {
   });
 }
 
-// Runs entirely client-side — the photo never leaves the device. Small
-// (alpha 0.25) MobileNet variant to keep the first-load cost low; loaded
-// lazily from a CDN, not bundled, since most sessions may never need it.
+// Runs entirely client-side — the photo never leaves the device. alpha 0.5
+// trades a slightly bigger one-time download (~5MB, cached after) for
+// meaningfully better accuracy than the smallest 0.25 variant, since casual
+// hand-held phone photos are already a hard case for this model.
 function getMobilenetModel() {
   if (!mobilenetModelPromise) {
     mobilenetModelPromise = loadScriptOnce(CDN_SCRIPTS[0].src, CDN_SCRIPTS[0].integrity)
       .then(() => loadScriptOnce(CDN_SCRIPTS[1].src, CDN_SCRIPTS[1].integrity))
-      .then(() => window.mobilenet.load({ version: 1, alpha: 0.25 }));
+      .then(() => window.mobilenet.load({ version: 1, alpha: 0.5 }));
   }
   return mobilenetModelPromise;
 }
@@ -321,12 +326,36 @@ getMobilenetModel().catch(() => {}); // warm it up in the background; failures a
 // { ok: true|false|null, label }. null means verification itself failed
 // (offline, CDN blocked, model error) — callers fail OPEN in that case
 // rather than blocking logging entirely over a network hiccup.
+//
+// This is a 1000-class general object classifier, not a purpose-built
+// "is this water" detector — on a quick, off-center, cluttered phone photo
+// it's often just uncertain rather than wrong. So the bar to REJECT is
+// "confidently thinks it's something else", not "didn't confidently say
+// water" — an uncertain top guess is treated as inconclusive and let through,
+// which cuts false rejections a lot at the cost of letting a few unrelated
+// low-confidence photos through too.
+const REJECT_CONFIDENCE_THRESHOLD = 0.4;
+// A rank-10 guess can carry well under 1% probability — pure noise, not a
+// real "the model spotted this too". Require some real weight behind a
+// keyword match before it counts as one (a genuine secondary object in
+// frame typically clears this easily; pure tail noise doesn't).
+const MATCH_CONFIDENCE_THRESHOLD = 0.05;
+
 async function verifyWaterPhoto(img) {
   try {
     const model = await getMobilenetModel();
-    const predictions = await model.classify(img, 5);
-    const match = predictions.find(p => WATER_KEYWORDS.some(k => p.className.toLowerCase().includes(k)));
-    return { ok: !!match, label: match ? match.className : (predictions[0] && predictions[0].className) };
+    const predictions = await model.classify(img, 10);
+    const match = predictions.find(p =>
+      p.probability >= MATCH_CONFIDENCE_THRESHOLD &&
+      WATER_KEYWORDS.some(k => p.className.toLowerCase().includes(k))
+    );
+    if (match) return { ok: true, label: match.className };
+
+    const top = predictions[0];
+    if (!top || top.probability < REJECT_CONFIDENCE_THRESHOLD) {
+      return { ok: true, label: null }; // model isn't sure enough to confidently say "no" — let it through
+    }
+    return { ok: false, label: top.className };
   } catch (e) {
     return { ok: null, label: null };
   }
@@ -466,24 +495,35 @@ function playSound() {
   playSynthChime();
 }
 
+// Shared by the real timer and the "Send test notification" button, so a
+// test is a genuine end-to-end check of the exact same code path — not a
+// simulation of it. Returns whether a system notification was actually
+// requested (false only means the permission/SW preconditions weren't met;
+// it does NOT mean the notification visibly appeared — see the note below).
+async function showReminderNotification(body) {
+  if (!('Notification' in window) || Notification.permission !== 'granted' || !('serviceWorker' in navigator)) {
+    return false;
+  }
+  const reg = await navigator.serviceWorker.ready;
+  await reg.showNotification('Hydrate', {
+    body,
+    icon: 'icons/icon-192.png',
+    badge: 'icons/icon-192.png',
+    tag: 'hydrate-reminder',
+    renotify: true,
+    vibrate: REMINDER_VIBRATE_PATTERN,
+    requireInteraction: false
+  });
+  return true;
+}
+
 let reminderCount = 0;
 
 async function fireReminder() {
   const body = REMINDER_MESSAGES[reminderCount % REMINDER_MESSAGES.length];
   reminderCount++;
 
-  if ('Notification' in window && Notification.permission === 'granted' && 'serviceWorker' in navigator) {
-    const reg = await navigator.serviceWorker.ready;
-    reg.showNotification('Hydrate', {
-      body,
-      icon: 'icons/icon-192.png',
-      badge: 'icons/icon-192.png',
-      tag: 'hydrate-reminder',
-      renotify: true,
-      vibrate: REMINDER_VIBRATE_PATTERN,
-      requireInteraction: false
-    });
-  }
+  await showReminderNotification(body);
   // Vibration API has no effect on iOS (no browser there implements it) —
   // the notification's own `vibrate` pattern above is what carries the
   // signature rhythm on platforms that do support it (mainly Android).
@@ -526,10 +566,12 @@ function updatePermissionNote() {
       els.permissionNote.textContent = 'Notifications are not supported in this browser.';
     }
     els.enableReminders.disabled = true;
+    els.testNotificationBtn.disabled = true;
     return;
   }
+  els.testNotificationBtn.disabled = false;
   if (Notification.permission === 'granted' && state.remindersOn) {
-    els.permissionNote.textContent = 'Reminders are on.';
+    els.permissionNote.textContent = 'Reminders are on. Nothing showing up? Try "Send test notification" below — if even that stays silent, check your OS notification settings for this browser/app (that toggle is separate from the permission you just granted, and Do Not Disturb/Focus modes block it too).';
   } else if (Notification.permission === 'denied') {
     els.permissionNote.textContent = 'Notifications are blocked. Allow them in your browser settings to enable reminders.';
   } else {
@@ -581,6 +623,20 @@ els.enableReminders.addEventListener('click', async () => {
   updatePermissionNote();
 });
 
+els.testNotificationBtn.addEventListener('click', async () => {
+  ensureAudioContext();
+  if (!('Notification' in window) || Notification.permission !== 'granted') {
+    els.permissionNote.textContent = 'Click "Enable reminders" first — a test notification needs the same browser permission a real one does.';
+    return;
+  }
+  const shown = await showReminderNotification('Test notification — if you can see or hear this, it works.');
+  if (navigator.vibrate) navigator.vibrate(REMINDER_VIBRATE_PATTERN);
+  playSound();
+  els.permissionNote.textContent = shown
+    ? 'Test sent just now. If you saw/heard nothing at all, the site permission is fine — check your OS/browser-level notification settings for this app instead (and Do Not Disturb/Focus mode).'
+    : "Couldn't reach the service worker to show it — try reloading the page once and test again.";
+});
+
 els.soundInput.addEventListener('change', () => {
   const file = els.soundInput.files[0];
   if (!file) return;
@@ -629,8 +685,12 @@ render();
 
 if (state.remindersOn && 'Notification' in window && Notification.permission === 'granted') {
   restartReminderTimer();
-} else {
+} else if (state.remindersOn) {
+  // Permission was revoked (OS settings, browser reset) since we last saved
+  // remindersOn=true — reflect that back to storage instead of silently
+  // drifting from what's on disk.
   state.remindersOn = false;
+  saveState(state);
 }
 
 if (IS_IOS && !IS_STANDALONE && !localStorage.getItem('hydrate-ios-banner-dismissed')) {

@@ -457,6 +457,12 @@ input:focus, select:focus, button:focus-visible {
 .field-row input { flex: 1; min-width: 0; }
 .field-row select { width: 90px; }
 
+.button-row {
+  display: flex;
+  gap: var(--space-3);
+}
+.button-row .btn { flex: 1; }
+
 .permission-note {
   margin: 0;
   font-size: 12px;
