@@ -5,6 +5,10 @@ const ML_PER_OZ = 29.5735;
 // Signature reminder rhythm: two short taps, a beat, one long pulse.
 // Unique enough to recognize by feel alone, distinct from a generic single buzz.
 const REMINDER_VIBRATE_PATTERN = [70, 60, 70, 160, 220];
+// One long pulse — deliberately the opposite rhythm of the reminder above,
+// so it never gets mistaken for "time to drink" when it means something
+// different (the day already ended short of the goal).
+const MISSED_GOAL_VIBRATE_PATTERN = [300];
 const REMINDER_MESSAGES = [
   'Time for a glass of water.',
   'Quick water break.',
@@ -36,7 +40,8 @@ function defaultState() {
     intervalMin: 60,
     remindersOn: false,
     entries: [],
-    history: []
+    history: [],
+    missedGoalPending: null
   };
 }
 
@@ -49,6 +54,10 @@ function loadState() {
     const total = state.entries.reduce((sum, e) => sum + e.amountMl, 0);
     state.history.push({ date: state.date, totalMl: total, goalMl: state.goalMl });
     state.history = state.history.slice(-7);
+    // Flagged here, at the moment we know for sure the day is over and
+    // shown once on the next render — not evaluated live during the day,
+    // since "not met" only means something once the day has actually ended.
+    state.missedGoalPending = total < state.goalMl ? { totalMl: total, goalMl: state.goalMl } : null;
     state.entries = [];
     state.date = todayKey();
   }
@@ -85,6 +94,9 @@ const els = {
   permissionNote: document.getElementById('permissionNote'),
   iosBanner: document.getElementById('iosBanner'),
   iosBannerClose: document.getElementById('iosBannerClose'),
+  missedGoalBanner: document.getElementById('missedGoalBanner'),
+  missedGoalText: document.getElementById('missedGoalText'),
+  missedGoalClose: document.getElementById('missedGoalClose'),
   cameraInput: document.getElementById('cameraInput'),
   soundInput: document.getElementById('soundInput'),
   testSoundBtn: document.getElementById('testSoundBtn'),
@@ -483,6 +495,28 @@ function playSynthChime() {
   });
 }
 
+// Three descending notes — the mirror image of the reminder chime's
+// ascending short-short-long, so the two are never confused by ear even
+// though they share the same synth voice.
+function playMissedGoalChime() {
+  if (!audioCtx) return;
+  const notes = [440, 370, 294];
+  let t = audioCtx.currentTime;
+  notes.forEach(freq => {
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = freq;
+    gain.gain.setValueAtTime(0, t);
+    gain.gain.linearRampToValueAtTime(0.12, t + 0.03);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
+    osc.connect(gain).connect(audioCtx.destination);
+    osc.start(t);
+    osc.stop(t + 0.24);
+    t += 0.2;
+  });
+}
+
 // Plays the user's uploaded clip if they set one, else the synthesized
 // signature chime. No visibility check here — the Test button calls this
 // directly and should always play; fireReminder gates it separately.
@@ -745,6 +779,25 @@ if (IS_IOS && !IS_STANDALONE && !localStorage.getItem('hydrate-ios-banner-dismis
 els.iosBannerClose.addEventListener('click', () => {
   els.iosBanner.hidden = true;
   localStorage.setItem('hydrate-ios-banner-dismissed', '1');
+});
+
+// Fires once, the first time the app is opened after a day ends short of
+// the goal — set by loadState() when it archives that day. Cleared
+// immediately so this never repeats on a later visit for the same miss.
+if (state.missedGoalPending) {
+  const { totalMl, goalMl } = state.missedGoalPending;
+  els.missedGoalText.textContent =
+    `Yesterday: ${displayAmount(totalMl)} / ${displayAmount(goalMl)} ${state.unit} — a bit short. Today's a clean slate.`;
+  els.missedGoalBanner.hidden = false;
+  document.querySelector('.ring-wrap').classList.add('missed-pulse');
+  ensureAudioContext();
+  playMissedGoalChime();
+  if (navigator.vibrate) navigator.vibrate(MISSED_GOAL_VIBRATE_PATTERN);
+  state.missedGoalPending = null;
+  saveState(state);
+}
+els.missedGoalClose.addEventListener('click', () => {
+  els.missedGoalBanner.hidden = true;
 });
 
 // Subtle pointer-driven tilt on the ring — a small nod to real depth
